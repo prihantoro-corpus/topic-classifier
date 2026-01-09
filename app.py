@@ -57,6 +57,9 @@ def suggest_label(keywords, embedder, candidate_labels):
 
 
 def build_overall_table(segments_df, assignments_df, topics_df):
+    if topics_df.empty:
+        return pd.DataFrame()
+
     merged = (
         assignments_df
         .merge(segments_df, on="segment_id", how="inner")
@@ -75,6 +78,9 @@ def build_overall_table(segments_df, assignments_df, topics_df):
 
 
 def build_per_doc_table(segments_df, assignments_df, topics_df):
+    if topics_df.empty:
+        return pd.DataFrame()
+
     merged = (
         assignments_df
         .merge(segments_df, on="segment_id", how="inner")
@@ -90,6 +96,10 @@ def build_per_doc_table(segments_df, assignments_df, topics_df):
 
 
 def plot_topic_distribution(overall_df):
+    if overall_df.empty:
+        st.info("No data available for plotting.")
+        return
+
     fig, ax = plt.subplots()
     ax.bar(overall_df["final_label"], overall_df["segment_count"])
     ax.set_xlabel("Topic")
@@ -164,13 +174,17 @@ st.header("3. Topic Modeling")
 
 with st.spinner("Running BERTopic..."):
     texts = segments_df["text"].tolist()
-    topic_model = BERTopic()
+    topic_model = BERTopic(min_topic_size=1)
     topics, probs = topic_model.fit_transform(texts)
 
 segments_df["topic_id"] = topics
 
 # remove outliers
 segments_df = segments_df[segments_df["topic_id"] != -1].reset_index(drop=True)
+
+if segments_df.empty:
+    st.error("❌ All segments were classified as outliers. Please provide more or longer text.")
+    st.stop()
 
 topic_info = topic_model.get_topic_info()
 raw_topics = {}
@@ -181,6 +195,13 @@ for tid in topic_info["Topic"]:
     words = topic_model.get_topic(tid)
     if words:
         raw_topics[tid] = [w[0] for w in words[:5]]
+
+if not raw_topics:
+    st.error(
+        "❌ No valid topics were generated. "
+        "This usually happens when the input is too small or too homogeneous."
+    )
+    st.stop()
 
 # ---------------------------
 # LABEL SUGGESTION
@@ -203,6 +224,10 @@ for tid, keywords in raw_topics.items():
     })
 
 topics_df = pd.DataFrame(topics_data)
+
+if topics_df.empty or "topic_id" not in topics_df.columns:
+    st.error("❌ Topic table is empty or malformed. Cannot proceed.")
+    st.stop()
 
 st.markdown("### Confirm or edit all topic labels")
 
@@ -239,11 +264,19 @@ st.header("5. Outputs")
 
 st.subheader("Overall Topic Table")
 overall_df = build_overall_table(segments_df, assignments_df, topics_df)
-st.dataframe(overall_df)
+
+if overall_df.empty:
+    st.info("No data available to display.")
+else:
+    st.dataframe(overall_df)
 
 st.subheader("Per-document Topic Table")
 per_doc_df = build_per_doc_table(segments_df, assignments_df, topics_df)
-st.dataframe(per_doc_df)
+
+if per_doc_df.empty:
+    st.info("No data available to display.")
+else:
+    st.dataframe(per_doc_df)
 
 st.subheader("Cluster Chart (Topic Distribution)")
 plot_topic_distribution(overall_df)
@@ -260,24 +293,28 @@ def to_csv_bytes(df):
 zip_buffer = io.BytesIO()
 
 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-    zf.writestr("overall_topics.csv", to_csv_bytes(overall_df))
-    zf.writestr("per_document_topics.csv", to_csv_bytes(per_doc_df))
+    if not overall_df.empty:
+        zf.writestr("overall_topics.csv", to_csv_bytes(overall_df))
+    if not per_doc_df.empty:
+        zf.writestr("per_document_topics.csv", to_csv_bytes(per_doc_df))
     zf.writestr("segments.csv", to_csv_bytes(segments_df))
     zf.writestr("topics.csv", to_csv_bytes(topics_df))
 
-st.download_button(
-    label="⬇️ Download Overall Table",
-    data=to_csv_bytes(overall_df),
-    file_name="overall_topics.csv",
-    mime="text/csv"
-)
+if not overall_df.empty:
+    st.download_button(
+        label="⬇️ Download Overall Table",
+        data=to_csv_bytes(overall_df),
+        file_name="overall_topics.csv",
+        mime="text/csv"
+    )
 
-st.download_button(
-    label="⬇️ Download Per-document Table",
-    data=to_csv_bytes(per_doc_df),
-    file_name="per_document_topics.csv",
-    mime="text/csv"
-)
+if not per_doc_df.empty:
+    st.download_button(
+        label="⬇️ Download Per-document Table",
+        data=to_csv_bytes(per_doc_df),
+        file_name="per_document_topics.csv",
+        mime="text/csv"
+    )
 
 st.download_button(
     label="⬇️ Download All Results (ZIP)",

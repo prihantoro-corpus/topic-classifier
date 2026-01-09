@@ -5,10 +5,11 @@ import zipfile
 import io
 import matplotlib.pyplot as plt
 import hdbscan
-
 from sentence_transformers import SentenceTransformer
 from bertopic import BERTopic
 from sklearn.metrics.pairwise import cosine_similarity
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 # =========================
 # CONFIG
@@ -23,8 +24,8 @@ CANDIDATE_LABELS = [
 ]
 
 TOPIC_COLORS = [
-    "#FF6B6B", "#4D96FF", "#6BCB77", "#FFD93D", "#9D4EDD",
-    "#FF922B", "#2EC4B6", "#F72585", "#90DBF4", "#BDB2FF"
+    "#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00",
+    "#A65628", "#F781BF", "#999999", "#66C2A5", "#FC8D62"
 ]
 
 MULTI_LABEL_THRESHOLD = 0.35
@@ -85,7 +86,7 @@ def plot_topic_distribution(overall_df):
         st.info("No data available for plotting.")
         return
 
-    fig, ax = plt.subplots(figsize=(5, 3.6))
+    fig, ax = plt.subplots(figsize=(2.2, 1.6))
     ax.bar(overall_df["final_label"], overall_df["segment_count"])
     ax.set_xlabel("Topic", fontsize=6)
     ax.set_ylabel("Segments", fontsize=6)
@@ -94,6 +95,35 @@ def plot_topic_distribution(overall_df):
     ax.tick_params(axis='y', labelsize=6)
 
     st.pyplot(fig, use_container_width=False)
+
+
+def generate_tei_xml(segments_df, assignments_df, topics_df):
+    root = ET.Element("TEI")
+    text_el = ET.SubElement(root, "text")
+    body = ET.SubElement(text_el, "body")
+
+    topic_map = topics_df.set_index("topic_id")["final_label"].to_dict()
+    grouped = assignments_df.groupby("segment_id")["topic_id"].apply(list).to_dict()
+
+    for doc_id, doc_group in segments_df.groupby("document_id"):
+        div = ET.SubElement(body, "div", attrib={"type": "document", "xml:id": doc_id})
+
+        for _, row in doc_group.iterrows():
+            seg_id = row["segment_id"]
+            seg_text = row["text"]
+            topic_ids = grouped.get(seg_id, [])
+
+            topics_str = " ".join([topic_map[t] for t in topic_ids])
+
+            seg_el = ET.SubElement(div, "seg", attrib={
+                "xml:id": seg_id,
+                "ana": topics_str
+            })
+            seg_el.text = seg_text
+
+    rough_string = ET.tostring(root, 'utf-8')
+    reparsed = minidom.parseString(rough_string)
+    return reparsed.toprettyxml(indent="  ")
 
 
 def highlight_text_accessible(segments_df, assignments_df, topics_df, active_topics):
@@ -115,21 +145,18 @@ def highlight_text_accessible(segments_df, assignments_df, topics_df, active_top
         active_here = [t for t in topics_here if t in active_topics]
 
         if active_here:
-            gradients = []
-            tooltips = []
-            for t in active_here:
-                gradients.append(color_map.get(t, "#DDD"))
-                tooltips.append(label_map.get(t, "Unknown"))
+            colors = [color_map[t] for t in active_here]
+            labels = [label_map[t] for t in active_here]
 
-            if len(gradients) == 1:
-                bg = gradients[0]
+            if len(colors) == 1:
+                bg = colors[0]
             else:
-                bg = f"linear-gradient(90deg, {', '.join(gradients)})"
+                bg = f"linear-gradient(90deg, {', '.join(colors)})"
 
-            tooltip_text = "Topics: " + ", ".join(tooltips)
+            tooltip = "Topics: " + ", ".join(labels)
 
             html += (
-                f'<span title="{tooltip_text}" '
+                f'<span title="{tooltip}" '
                 f'style="background:{bg}; padding:4px; margin:2px; '
                 f'display:inline-block; border-radius:4px; cursor:help;">'
                 f'{seg_text}.</span> '
@@ -138,6 +165,7 @@ def highlight_text_accessible(segments_df, assignments_df, topics_df, active_top
             html += f"{seg_text}. "
 
     return html
+
 
 # =========================
 # APP
@@ -197,7 +225,7 @@ for tid in topic_info["Topic"]:
         raw_topics[tid] = [w[0] for w in words[:5]]
 
 # LABEL SUGGESTION
-st.header("4. Topic Label Suggestion (Mandatory)")
+st.header("4. Topic Label Suggestion")
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -220,7 +248,7 @@ for idx, row in topics_df.iterrows():
     )
     topics_df.at[idx, "final_label"] = new_label
 
-# MULTI-LABEL ASSIGNMENT (FIX 2 APPLIED)
+# MULTI-LABEL ASSIGNMENT (GUARANTEED)
 st.header("5. Multi-label Assignment")
 
 topic_phrases = topics_df.set_index("topic_id")["keywords"].to_dict()
@@ -255,7 +283,7 @@ for i, seg_vec in enumerate(segment_embeddings):
 
 assignments_df = pd.DataFrame(assignments)
 
-# OUTPUTS
+# OUTPUT TABLES
 st.header("6. Outputs")
 
 overall_df = build_overall_table(assignments_df, segments_df, topics_df)
@@ -270,8 +298,56 @@ st.dataframe(per_doc_df)
 st.subheader("Topic Distribution (Compact)")
 plot_topic_distribution(overall_df)
 
+# =========================
+# DOWNLOADS (FIXED – ALWAYS VISIBLE)
+# =========================
+
+st.header("7. Downloads")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    csv = overall_df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download Overall Table (CSV)", csv, "overall_topics.csv", "text/csv")
+
+with col2:
+    csv2 = per_doc_df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download Per-document Table (CSV)", csv2, "per_document_topics.csv", "text/csv")
+
+with col3:
+    tei_xml = generate_tei_xml(segments_df, assignments_df, topics_df)
+    st.download_button("⬇️ Download TEI XML", tei_xml, "corpus_topics.xml", "application/xml")
+
+# ZIP EXPORT
+zip_buffer = io.BytesIO()
+with zipfile.ZipFile(zip_buffer, "w") as z:
+    z.writestr("overall_topics.csv", overall_df.to_csv(index=False))
+    z.writestr("per_document_topics.csv", per_doc_df.to_csv(index=False))
+    z.writestr("corpus_topics.xml", tei_xml)
+
+st.download_button("⬇️ Download ALL (ZIP)", zip_buffer.getvalue(), "all_outputs.zip", "application/zip")
+
+# =========================
+# LEGEND PANEL
+# =========================
+
+st.header("8. Legend")
+
+legend_html = """
+<div style="padding:10px; border:1px solid #ccc; border-radius:5px;">
+<b>Highlighting Legend</b><br><br>
+<div><span style="background:#E41A1C; padding:4px 10px; border-radius:4px;"></span> Solid colour = single topic</div><br>
+<div><span style="background:linear-gradient(90deg,#E41A1C,#377EB8); padding:4px 10px; border-radius:4px;"></span> Gradient = multiple topics overlapping</div><br>
+<div>Hover over any coloured segment to see exact topic labels.</div>
+</div>
+"""
+st.markdown(legend_html, unsafe_allow_html=True)
+
+# =========================
 # STACKED HIGHLIGHT
-st.header("7. Stacked Multi-topic Highlighting")
+# =========================
+
+st.header("9. Stacked Multi-topic Highlighting")
 
 active_topics = []
 cols = st.columns(len(topics_df))

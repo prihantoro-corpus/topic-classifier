@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 # ---------------------------
 # CONFIG
 # ---------------------------
+
 st.set_page_config(page_title="Segment-based Topic Analytics", layout="wide")
 
 CANDIDATE_LABELS = [
@@ -23,10 +24,10 @@ CANDIDATE_LABELS = [
 # UTILITIES
 # ---------------------------
 
-def simple_segmenter(text):
+def simple_segmenter(text, doc_id):
     """
     Very simple segmentation: split by period.
-    Replace later with smarter discourse segmentation.
+    Each segment_id is globally unique.
     """
     raw_segments = [s.strip() for s in text.split('.') if s.strip()]
     segments = []
@@ -36,7 +37,8 @@ def simple_segmenter(text):
         end = start + len(seg)
         cursor = end
         segments.append({
-            "segment_id": f"s{i}",
+            "segment_id": f"{doc_id}_s{i}",
+            "document_id": doc_id,
             "text": seg,
             "start_char": start,
             "end_char": end,
@@ -55,7 +57,12 @@ def suggest_label(keywords, embedder, candidate_labels):
 
 
 def build_overall_table(segments_df, assignments_df, topics_df):
-    merged = assignments_df.merge(segments_df, on="segment_id").merge(topics_df, on="topic_id")
+    merged = (
+        assignments_df
+        .merge(segments_df, on="segment_id", how="inner")
+        .merge(topics_df, on="topic_id", how="inner")
+    )
+
     grouped = merged.groupby(["topic_id", "final_label", "keywords"]).agg(
         segment_count=("segment_id", "count"),
         total_tokens=("token_count", "sum"),
@@ -68,11 +75,17 @@ def build_overall_table(segments_df, assignments_df, topics_df):
 
 
 def build_per_doc_table(segments_df, assignments_df, topics_df):
-    merged = assignments_df.merge(segments_df, on="segment_id").merge(topics_df, on="topic_id")
+    merged = (
+        assignments_df
+        .merge(segments_df, on="segment_id", how="inner")
+        .merge(topics_df, on="topic_id", how="inner")
+    )
+
     grouped = merged.groupby(["document_id", "topic_id", "final_label"]).agg(
         segment_count=("segment_id", "count"),
         total_tokens=("token_count", "sum")
     ).reset_index()
+
     return grouped.sort_values(by=["document_id", "segment_count"], ascending=[True, False])
 
 
@@ -84,7 +97,6 @@ def plot_topic_distribution(overall_df):
     ax.set_title("Topic Distribution (by Segments)")
     plt.xticks(rotation=45, ha="right")
     st.pyplot(fig)
-
 
 # ---------------------------
 # APP
@@ -115,7 +127,6 @@ if input_mode == "Direct Text":
             "filename": "direct_input",
             "text": text_input
         })
-
 else:
     uploaded_files = st.file_uploader("Upload text files", type=["txt"], accept_multiple_files=True)
     for f in uploaded_files:
@@ -137,12 +148,11 @@ st.header("2. Segmentation")
 
 all_segments = []
 for doc in documents:
-    segs = simple_segmenter(doc["text"])
-    for s in segs:
-        s["document_id"] = doc["document_id"]
+    segs = simple_segmenter(doc["text"], doc["document_id"])
     all_segments.extend(segs)
 
 segments_df = pd.DataFrame(all_segments)
+
 st.write(f"Total segments: {len(segments_df)}")
 st.dataframe(segments_df[["segment_id", "document_id", "text"]].head())
 
@@ -158,6 +168,9 @@ with st.spinner("Running BERTopic..."):
     topics, probs = topic_model.fit_transform(texts)
 
 segments_df["topic_id"] = topics
+
+# remove outliers
+segments_df = segments_df[segments_df["topic_id"] != -1].reset_index(drop=True)
 
 topic_info = topic_model.get_topic_info()
 raw_topics = {}
@@ -183,7 +196,7 @@ for tid, keywords in raw_topics.items():
     label, conf = suggest_label(keywords, embedder, CANDIDATE_LABELS)
     topics_data.append({
         "topic_id": tid,
-        "keywords": keywords,
+        "keywords": ", ".join(keywords),
         "suggested_label": label,
         "confidence": conf,
         "final_label": label
@@ -198,7 +211,7 @@ label_confirmed = True
 for idx, row in topics_df.iterrows():
     with st.container():
         st.markdown(f"**Topic {row['topic_id']}**")
-        st.markdown(f"Keywords: `{', '.join(row['keywords'])}`")
+        st.markdown(f"Keywords: `{row['keywords']}`")
         new_label = st.text_input(
             f"Label for Topic {row['topic_id']}",
             value=row["final_label"],
@@ -217,7 +230,6 @@ if not label_confirmed:
 # ---------------------------
 
 assignments_df = segments_df[["segment_id", "topic_id"]].copy()
-assignments_df["weight"] = 1.0  # placeholder
 
 # ---------------------------
 # OUTPUTS
@@ -225,17 +237,14 @@ assignments_df["weight"] = 1.0  # placeholder
 
 st.header("5. Outputs")
 
-# Overall table
 st.subheader("Overall Topic Table")
 overall_df = build_overall_table(segments_df, assignments_df, topics_df)
 st.dataframe(overall_df)
 
-# Per document table
 st.subheader("Per-document Topic Table")
 per_doc_df = build_per_doc_table(segments_df, assignments_df, topics_df)
 st.dataframe(per_doc_df)
 
-# Chart
 st.subheader("Cluster Chart (Topic Distribution)")
 plot_topic_distribution(overall_df)
 

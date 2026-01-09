@@ -85,7 +85,7 @@ def plot_topic_distribution(overall_df):
         st.info("No data available for plotting.")
         return
 
-    fig, ax = plt.subplots(figsize=(2.5, 1.8))
+    fig, ax = plt.subplots(figsize=(5, 3.6))
     ax.bar(overall_df["final_label"], overall_df["segment_count"])
     ax.set_xlabel("Topic", fontsize=6)
     ax.set_ylabel("Segments", fontsize=6)

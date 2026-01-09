@@ -4,6 +4,7 @@ import numpy as np
 import zipfile
 import io
 import matplotlib.pyplot as plt
+import re
 
 from sentence_transformers import SentenceTransformer
 from bertopic import BERTopic
@@ -22,14 +23,16 @@ CANDIDATE_LABELS = [
     "Security", "Gender", "Migration", "Media", "Family"
 ]
 
+TOPIC_COLORS = [
+    "#FF6B6B", "#4D96FF", "#6BCB77", "#FFD93D", "#9D4EDD",
+    "#FF922B", "#2EC4B6", "#F72585", "#90DBF4", "#BDB2FF"
+]
+
 # =========================
 # UTILITIES
 # =========================
 
 def simple_segmenter(text, doc_id):
-    """
-    Deterministic, stable segmenter.
-    """
     raw_segments = [s.strip() for s in text.split('.') if s.strip()]
     segments = []
 
@@ -55,7 +58,6 @@ def suggest_label(keywords, embedder, candidate_labels):
 
 def build_overall_table(segments_df, assignments_df, topics_df):
 
-    # --- Hard schema validation ---
     required = {
         "segments_df": {"segment_id", "topic_id", "token_count"},
         "assignments_df": {"segment_id", "topic_id"},
@@ -87,18 +89,6 @@ def build_overall_table(segments_df, assignments_df, topics_df):
 
 def build_per_doc_table(segments_df, assignments_df, topics_df):
 
-    required = {
-        "segments_df": {"segment_id", "document_id", "topic_id", "token_count"},
-        "assignments_df": {"segment_id", "topic_id"},
-        "topics_df": {"topic_id", "final_label"}
-    }
-
-    for name, cols in required.items():
-        df = locals()[name]
-        missing = cols - set(df.columns)
-        if missing:
-            raise ValueError(f"{name} is missing columns: {missing}")
-
     merged = assignments_df.merge(
         segments_df, on=["segment_id", "topic_id"], how="inner"
     ).merge(
@@ -126,6 +116,26 @@ def plot_topic_distribution(overall_df):
     plt.xticks(rotation=45, ha="right")
     st.pyplot(fig)
 
+
+def highlight_text(segments_df, topics_df, active_topics):
+    color_map = {}
+    for i, row in topics_df.iterrows():
+        color_map[row["topic_id"]] = TOPIC_COLORS[i % len(TOPIC_COLORS)]
+
+    html = ""
+
+    for _, row in segments_df.iterrows():
+        tid = row["topic_id"]
+        seg_text = row["text"]
+
+        if tid in active_topics:
+            color = color_map.get(tid, "#DDD")
+            html += f'<span style="background: {color}; padding:4px; margin:2px; display:inline-block;">{seg_text}.</span> '
+        else:
+            html += f"{seg_text}. "
+
+    return html
+
 # =========================
 # APP
 # =========================
@@ -133,9 +143,8 @@ def plot_topic_distribution(overall_df):
 st.title("📊 Segment-based Topic Analytics Platform")
 
 st.markdown(
-    "This tool performs **blind topic modeling on discourse segments**, "
-    "suggests semantic labels using **word embeddings**, and **forces confirmation "
-    "of all labels** before generating analytical outputs."
+    "Blind topic modeling on discourse segments with **mandatory semantic labeling** "
+    "and **stacked multi-topic highlighting visualisation**."
 )
 
 # =========================
@@ -214,7 +223,6 @@ with st.spinner("Running BERTopic..."):
 
 segments_df["topic_id"] = topics
 
-# Remove outliers
 segments_df = segments_df[segments_df["topic_id"] != -1].reset_index(drop=True)
 
 if segments_df.empty:
@@ -260,10 +268,6 @@ for tid, keywords in raw_topics.items():
 
 topics_df = pd.DataFrame(topics_data)
 
-if topics_df.empty:
-    st.error("❌ Topic table is empty. Cannot proceed.")
-    st.stop()
-
 st.markdown("### Confirm or edit all topic labels")
 
 label_confirmed = True
@@ -284,7 +288,7 @@ if not label_confirmed:
     st.stop()
 
 # =========================
-# ASSIGNMENTS (CLEAN & STABLE)
+# ASSIGNMENTS
 # =========================
 
 assignments_df = pd.DataFrame({
@@ -301,8 +305,20 @@ st.header("5. Outputs")
 overall_df = build_overall_table(segments_df, assignments_df, topics_df)
 per_doc_df = build_per_doc_table(segments_df, assignments_df, topics_df)
 
-st.subheader("Overall Topic Table")
-st.dataframe(overall_df)
+# --- Resize overall table ---
+st.markdown(
+    """
+    <style>
+    .small-table {width:30%;}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.subheader("Overall Topic Table (Compact View)")
+st.markdown('<div class="small-table">', unsafe_allow_html=True)
+st.dataframe(overall_df, use_container_width=False)
+st.markdown('</div>', unsafe_allow_html=True)
 
 st.subheader("Per-document Topic Table")
 st.dataframe(per_doc_df)
@@ -311,10 +327,37 @@ st.subheader("Topic Distribution Chart")
 plot_topic_distribution(overall_df)
 
 # =========================
+# STACKED MULTI-TOPIC HIGHLIGHT
+# =========================
+
+st.header("6. Stacked Multi-topic Highlighting")
+
+st.markdown("Select topics to highlight. Multiple selections will stack visually.")
+
+active_topics = []
+cols = st.columns(len(topics_df))
+
+for i, row in topics_df.iterrows():
+    with cols[i]:
+        if st.checkbox(row["final_label"], key=f"chk_{row['topic_id']}"):
+            active_topics.append(row["topic_id"])
+
+highlighted_html = highlight_text(segments_df, topics_df, active_topics)
+
+st.markdown(
+    f"""
+    <div style="border:1px solid #ccc; padding:15px; border-radius:5px; line-height:1.8;">
+    {highlighted_html}
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# =========================
 # DOWNLOADS
 # =========================
 
-st.header("6. Downloads")
+st.header("7. Downloads")
 
 def to_csv_bytes(df):
     return df.to_csv(index=False).encode("utf-8")
